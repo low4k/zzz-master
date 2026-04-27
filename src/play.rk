@@ -1,0 +1,150 @@
+let ESC = hex.decode("1b") + "["
+let RS  = hex.decode("1e")
+
+fn arg(args, i, dflt) {
+    if len(args) > i { args[i] } else { dflt }
+}
+
+fn read_zzz(path) {
+    let mut raw = read_file(path)
+    if raw == nil { panic("could not read: " + path) }
+    raw = strs.replace(raw, "\r\n", "\n")
+    raw = strs.replace(raw, "\r", "\n")
+    let lines = strs.split(raw, "\n")
+    if len(lines) < 2 { panic("not a .zzz file") }
+    if lines[0] != "ZZZ1" { panic("bad magic: " + lines[0]) }
+    let header = json.parse(lines[1])
+
+    let mut frames = []
+    let mut buf = ""
+    let mut in_frame = false
+    let mut i = 2
+    while i < len(lines) {
+        let line = lines[i]
+        if line == RS + "FRAME" {
+            if in_frame { push(frames, buf) }
+            buf = ""
+            in_frame = true
+        } else if line == RS + "END" {
+            if in_frame { push(frames, buf); in_frame = false }
+        } else if in_frame {
+            if buf == "" { buf = line } else { buf = buf + "\n" + line }
+        }
+        i += 1
+    }
+    if in_frame { push(frames, buf) }
+    {"header": header, "frames": frames}
+}
+
+fn parse_int_default(s, dflt) {
+    let v = parse_int(s)
+    if v <= 0 { dflt } else { v }
+}
+
+fn play(path, loops, fps_override) {
+    let doc    = read_zzz(path)
+    let header = doc["header"]
+    let frames = doc["frames"]
+
+    let fps = if fps_override > 0 { fps_override } else { header["fps"] }
+    let delay = if fps > 0 { 1000 / fps } else { 80 }
+
+    print(ESC + "?25l")
+    print(ESC + "2J")
+
+    let mut iter = 0
+    let total_loops = if loops <= 0 { 9999 } else { loops }
+    while iter < total_loops {
+        let mut k = 0
+        while k < len(frames) {
+            print(ESC + "H" + frames[k])
+            time.sleep_ms(delay)
+            k += 1
+        }
+        iter += 1
+    }
+
+    print(ESC + "?25h")
+    print(ESC + "0m")
+}
+
+fn pin(path, row, col, loops, fps_override) {
+    let doc    = read_zzz(path)
+    let header = doc["header"]
+    let frames = doc["frames"]
+
+    let fps = if fps_override > 0 { fps_override } else { header["fps"] }
+    let delay = if fps > 0 { 1000 / fps } else { 80 }
+
+    let HIDE = ESC + "?25l"
+    let SHOW = ESC + "?25h"
+
+    print(HIDE)
+
+    let total_loops = if loops <= 0 { 9999 } else { loops }
+    let mut iter = 0
+    while iter < total_loops {
+        let mut k = 0
+        while k < len(frames) {
+            let lines = strs.split(frames[k], "\n")
+            let mut buf = HIDE
+            let mut i = 0
+            while i < len(lines) {
+                let r = row + i
+                buf = buf + ESC + str(r) + ";" + str(col) + "H" + lines[i]
+                i += 1
+            }
+            // park cursor inside the anim strip (outside any scroll region) so
+            // the implicit '\n' from print/println does not scroll the log area.
+            buf = buf + ESC + "0m" + ESC + str(row) + ";1H"
+            print(buf)
+            time.sleep_ms(delay)
+            k += 1
+        }
+        iter += 1
+    }
+
+    print(SHOW)
+}
+
+fn show_info(path) {
+    let doc = read_zzz(path)
+    let h = doc["header"]
+    print("file:      " + path)
+    print("source:    " + h["src"])
+    print("size:      " + str(h["w"]) + "x" + str(h["h"]))
+    print("frames:    " + str(h["frames"]))
+    print("fps:       " + str(h["fps"]))
+    print("bg_removed:" + str(h["bg_removed"]))
+}
+
+fn main() {
+    let a = os.args()
+    let cmd = arg(a, 4, "play")
+
+    if cmd == "play" {
+        let path  = arg(a, 5, "")
+        if path == "" { print("usage: play <file.zzz> [loops] [fps]"); return }
+        let loops = parse_int_default(arg(a, 6, "1"), 1)
+        let fps   = parse_int_default(arg(a, 7, "0"), 0)
+        play(path, loops, fps)
+    } else if cmd == "loop" {
+        let path = arg(a, 5, "")
+        if path == "" { print("usage: loop <file.zzz>"); return }
+        play(path, 0, 0)
+    } else if cmd == "pin" {
+        let path = arg(a, 5, "")
+        if path == "" { print("usage: pin <file.zzz> <row> <col> [loops] [fps]"); return }
+        let row   = parse_int_default(arg(a, 6, "1"), 1)
+        let col   = parse_int_default(arg(a, 7, "1"), 1)
+        let loops = parse_int_default(arg(a, 8, "0"), 0)
+        let fps   = parse_int_default(arg(a, 9, "0"), 0)
+        pin(path, row, col, loops, fps)
+    } else if cmd == "info" {
+        let path = arg(a, 5, "")
+        if path == "" { print("usage: info <file.zzz>"); return }
+        show_info(path)
+    } else {
+        print("usage: zzz play|loop|pin|info <file.zzz>")
+    }
+}
